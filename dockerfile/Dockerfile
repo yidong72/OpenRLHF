@@ -17,7 +17,13 @@ RUN apt-get -y install build-essential git python3-dev python3-pip libopenexr-de
 RUN pip uninstall xgboost transformer_engine flash_attn -y
 RUN pip install vllm==0.6.4.post1
 
-COPY docker-entrypoint.sh .
-RUN chmod a+x docker-entrypoint.sh
+# COPY docker-entrypoint.sh .
+# RUN chmod a+x docker-entrypoint.sh
 
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+# ENTRYPOINT ["/app/docker-entrypoint.sh"]
+RUN apt-get update && apt-get install -y gosu
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+WORKDIR /workspace
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["/bin/bash"]
