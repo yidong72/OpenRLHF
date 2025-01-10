@@ -47,6 +47,14 @@ def remote_rm_fn_ray(api_url, queries, score_key="rewards"):
 
 if __name__ == "__main__":
     # test utils
-    url = "http:xxx/get_rm_score"
-    score = remote_rm_fn(url, ["example query"], ["example response"])
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-3.3-70B-Instruct')
+
+    query = tokenizer.apply_chat_template([
+        {"role": "system", "content": f"Generate your reasoning chain with no more than 500 tokens"}, {"role": "user", "content": "Solve the equation: $\\frac{47}{9}+\\frac{3}{2} x=\\frac{5}{3}\\left(\\frac{5}{2} x+1\\right)$"}, {"role": "assistant", "content": f"<think>\n\ndfdsfgdsgsd blah blah\n\n</think>\n$\\boxed{{\\frac{4}{3}$}}"}
+    ], add_generation_prompt=False, tokenize=False)
+    print(query)
+
+    url = "http://127.0.0.1:5000/get_reward"
+    score = remote_rm_fn(url, [query])
     print(score)
