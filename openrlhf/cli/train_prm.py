@@ -81,7 +81,7 @@ def train(args):
     scheduler = get_scheduler(
         args.lr_scheduler,
         optim,
-        num_warmup_steps=math.ceil(max_steps * 0.03),
+        num_warmup_steps=math.ceil(max_steps * args.lr_warmup_ratio),
         num_training_steps=max_steps,
         scheduler_specific_kwargs={"min_lr": args.learning_rate * 0.1},
     )
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--adam_offload", action="store_true", default=False, help="Offload Adam Optimizer")
     parser.add_argument("--flash_attn", action="store_true", default=False, help="Enable FlashAttention2")
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
-    parser.add_argument("--disable_trace_cache", action="store_true", default=False)
+    parser.add_argument("--overlap_comm", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 
@@ -157,6 +157,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_epochs", type=int, default=1)
     parser.add_argument("--aux_loss_coef", type=float, default=0, help="MoE balancing loss")
     parser.add_argument("--learning_rate", type=float, default=1e-6)
+    parser.add_argument("--lr_warmup_ratio", type=float, default=0.03)
     parser.add_argument("--micro_train_batch_size", type=int, default=1)
     parser.add_argument("--train_batch_size", type=int, default=128, help="Global training batch size")
     parser.add_argument("--lr_scheduler", type=str, default="cosine_with_min_lr")

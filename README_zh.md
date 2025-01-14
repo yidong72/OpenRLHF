@@ -28,40 +28,43 @@
 
 <hr>
 
-<span>[ <a href="README.md">English</a> | 中文 ]</span>
+<span>[ <a href="README.md">English</a> | 中文 | <a href="README_ja.md">日本語</a> ]</span>
 
 OpenRLHF 是一个基于 Ray、DeepSpeed 和 HF Transformers 构建的高性能 RLHF 框架：
 
 - **简单易用**: OpenRLHF 是目前可用的最简单的高性能 RLHF 库之一，无缝兼容 Huggingface 模型和数据集。
 - **高性能**: RLHF 训练中 80% 的时间用于样本生成阶段。得益于使用 Ray, Packing Samples 以及 vLLM 生成加速的能力，OpenRLHF 的性能是极致优化的 DeepSpeedChat with Hybrid Engine 的3~4倍以上。
 - **分布式 RLHF**:  OpenRLHF 使用 Ray 将 Actor、Reward、Reference 和 Critic 模型分布到不同的 GPU 上，同时将 Adam 优化器放在 CPU 上。这使得使用多个 A100 80G GPU 和 vLLM 可以全面微调超过 70B+ 的模型 以及在多个 24GB RTX 4090 GPU 上微调 7B 模型。
-- **PPO 实现技巧**: 我们集成了 PPO 的实现技巧以提高训练稳定性，详情参考 [知乎](https://zhuanlan.zhihu.com/p/622134699) 和 [Notion blog](https://difficult-link-dd7.notion.site/eb7b2d1891f44b3a84e7396d19d39e6f?v=01bcb084210149488d730064cbabc99f).
+- **PPO 实现技巧**: 我们集成了 PPO 的实现技巧以提高训练稳定性，详情参考 [知乎](https://zhuanlan.zhihu.com/p/622134699) 和 [Notion blog](https://hijkzzz.notion.site/rlhf-implementation-tricks?v=158d9a33ecc98132bf9e000c39227361).
 
 更多细节请参考 [PPT](https://docs.google.com/presentation/d/1JRhB1d7csofx0PIZBmfyBdMluxNd5JLPpUHrrvVhGnk/edit?usp=sharing) | [技术报告](https://arxiv.org/abs/2405.11143) | [使用文档](https://openrlhf.readthedocs.io/)
 
 
-## 特性
+## 新闻  
+- [2024/12] 我们"提出"了 😊 [REINFORCE++ 对齐算法](https://www.researchgate.net/publication/387487679_REINFORCE_A_SIMPLE_AND_EFFICIENT_APPROACH_FOR_ALIGNING_LARGE_LANGUAGE_MODELS).
+- [2024/12] 在 [Notion Blog](https://hijkzzz.notion.site/unraveling-rlhf-and-its-variants-engineering-insights#147d9a33ecc9806090f3d5c749d31f05) 中，我们对 PPO、REINFORCE++、GRPO 和 RLOO 进行了分析。  
 
-- 基于 Ray 的分布式 [PPO](./examples/scripts/train_ppo_llama_ray.sh)/[Reinforce](./examples/scripts/train_reinforce_llama_ray.sh) based on Ray. 
-- 支持使用 [超过 70 亿参数的模型进行全面 RLHF 微调](./examples/scripts/train_ppo_llama_ray_70b.sh).
-- 支持 vLLM 生成加速在 RLHF 中 (--vllm_num_engines).
-- 支持 多个奖励模型 (--reward_pretrain model1,model2...) 及 远程奖励模型 (--remote_rm_url).
-- 支持 [DPO (直接偏好优化)/IPO/cDPO](./examples/scripts/train_dpo_llama.sh).
-- 支持 [Kahneman-Tversky 优化 (KTO)](./examples/scripts/train_kto_llama.sh).
-- 支持 [拒绝采样](./examples/scripts/train_rejection_sampling_llama.sh).
-- 支持 [Iterative DPO](./examples/scripts/train_iterative_dpo_llama.sh) (https://github.com/RLHFlow/Online-RLHF).
-- 支持 [条件 SFT](./examples/scripts/train_conditional_llama.sh) (https://arxiv.org/abs/2308.12050).
-- 支持 [知识蒸馏](./examples/scripts/train_knowledge_distillation.sh) (https://github.com/microsoft/LMOps/tree/main/minillm).
-- 支持 [过程 Reward Model (PRM)](./examples/scripts/train_prm_mistral.sh).
-- 支持 SFT/DPO/RM/PRM/PPO 训练样本打包 (--packing_samples).
-- 支持 [RingAttention](./examples/scripts/train_dpo_ring_llama.sh) (--ring_attn_size, --ring_head_stride)
-- 支持 [MoE](./examples/test_scripts/train_sft_mixtral_lora.sh) (--aux_loss_coef)
-- 支持 FlashAttention2 (--flash_attn).
-- 支持 QLoRA (--load_in_4bit), [LoRA (--lora_rank, --target_modules)]((./examples/scripts/train_sft_mixtral_lora.sh)).
-- 支持 HuggingFace `tokenizer.apply_chat_template` 用于数据集处理 (--apply_chat_template 和 --input_key).
-- 支持 Wandb 日志 (--use_wandb) 和 tensorboard (--use_tensorboard).
-- 支持 checkpoint 断点训练 (--load_checkpoint 和 --save_steps).
-- 多节点 [训练脚本](./examples/scripts/train_llama_slurm.sh) 适用于 Slurm.
+## 特性  
+
+- 基于 Ray 的分布式 [PPO](./examples/scripts/train_ppo_llama_ray.sh) 和 [REINFORCE++/RLOO](./examples/scripts/train_reinforce_llama_ray.sh) 实现。  
+- 支持对 [超过 700 亿参数的模型](./examples/scripts/train_ppo_llama_ray_70b.sh) 进行完整的 RLHF 微调。  
+- 集成 vLLM，加速 RLHF 任务中的样本生成（`--vllm_num_engines`）。  
+- 支持多个奖励模型（`--reward_pretrain model1,model2...`）和远程奖励模型（`--remote_rm_url`）。  
+- 实现 [DPO（直接偏好优化）/IPO/cDPO](./examples/scripts/train_dpo_llama.sh) 和 [Kahneman-Tversky Optimization（KTO）](./examples/scripts/train_kto_llama.sh)。  
+- 支持 [迭代 DPO](./examples/scripts/train_iterative_dpo_llama.sh)（[GitHub: Online-RLHF](https://github.com/RLHFlow/Online-RLHF)）。  
+- 支持 [拒绝采样](./examples/scripts/train_rejection_sampling_llama.sh)。  
+- 实现 [条件 SFT](./examples/scripts/train_conditional_llama.sh)（[arXiv:2308.12050](https://arxiv.org/abs/2308.12050)）。  
+- 支持 [知识蒸馏](./examples/scripts/train_knowledge_distillation.sh)（[Microsoft: minillm](https://github.com/microsoft/LMOps/tree/main/minillm)）。  
+- 集成 [过程奖励模型（PRM）](./examples/scripts/train_prm_mistral.sh)。  
+- 支持 SFT、DPO、RM、PRM 和 PPO 的训练样本打包（`--packing_samples`）。  
+- 实现 [RingAttention](./examples/scripts/train_dpo_ring_llama.sh)（`--ring_attn_size`，`--ring_head_stride`）。  
+- 支持 [专家混合模型（MoE）](./examples/test_scripts/train_sft_mixtral_lora.sh)（`--aux_loss_coef`）。  
+- 集成 FlashAttention2（`--flash_attn`）。  
+- 支持 QLoRA（`--load_in_4bit`）和 [LoRA](./examples/scripts/train_sft_mixtral_lora.sh)（`--lora_rank`，`--target_modules`）。  
+- 兼容 HuggingFace 的 `tokenizer.apply_chat_template` 数据集格式（`--apply_chat_template` 和 `--input_key`）。  
+- 支持使用 Wandb（`--use_wandb`）和 TensorBoard（`--use_tensorboard`）进行日志记录。  
+- 支持从检查点恢复训练（`--load_checkpoint` 和 `--save_steps`）。  
+- 提供了多节点训练脚本, 比如 [DPO](./examples/scripts/train_llama_slurm.sh) 和 [RLHF](./examples/scripts/train_ppo_llama_ray_slurm.sh)
 
 
 ### PPO 支持矩阵
@@ -94,7 +97,7 @@ sudo pip uninstall xgboost transformer_engine flash_attn -y
 # pip install
 pip install openrlhf
 
-# 如果你需要使用 vLLM 加速 (安装 vLLM 0.6.4.post1)
+# 如果你需要使用 vLLM 加速 (安装 vLLM 0.6.5)
 pip install openrlhf[vllm]
 # 最新的 vLLM 也是支持的
 pip install openrlhf[vllm_latest]
@@ -109,7 +112,7 @@ pip install -e .
 ```
 
 > [!NOTE]
->我们推荐使用 vLLM 0.6.4+ (仅支持多节点时 NCCL 权重同步) 或者 vLLM 0.4.2 (`--vllm_sync_backend nccl`)，其他版本目前需要通过 Gloo 进行权重同步（`--vllm_sync_backend gloo`）。
+>我们推荐使用 vLLM 0.6.4+，其他版本 (vLLM >= 0.4.2) 可能需要通过 Gloo 进行权重同步（`--vllm_sync_backend gloo`）。
 >我们也提供了 [Dockerfiles for vLLM](./dockerfile/) 和 [Nvidia-Docker 一键安装脚本](./examples/scripts/nvidia_docker_install.sh)。
 
 ### 准备数据集
@@ -119,7 +122,10 @@ OpenRLHF 在其数据集类中提供了多种数据处理方法。
 ```python
 def preprocess_data(data, input_template=None, input_key="input", apply_chat_template=None) -> str:
     if apply_chat_template:
-        prompt = apply_chat_template(data[input_key], tokenize=False, add_generation_prompt=True)
+        chat = data[input_key]
+        if isinstance(chat, str):
+            chat = [{"role": "user", "content": chat}]
+        prompt = apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
     else:
         prompt = data[input_key]
         if input_template:
@@ -193,8 +199,12 @@ deepspeed --module openrlhf.cli.train_sft \
 
 # 支持 HF tokenizer.apply_chat_template
 # --apply_chat_template 
-# --input_key {JSON Key}
 # --tokenizer_chat_template {HF Chat Template}
+
+# 支持 RingAttention
+# pip install ring_flash_attn
+#   --ring_attn_size 2 \
+#   --ring_head_stride 2 \
 
 # 也可用于 continued pre-training
 # --pretrain_mode
@@ -241,7 +251,7 @@ reward_model = AutoModelForSequenceClassification.from_pretrained(
               use_cache=False,
           )
 inputs = xxxx (Left Padding Input Tokens)
-reward = reward_model.model(*inputs)
+reward = reward_model.model(*inputs).last_hidden_state
 reward = reward_model.score(reward)[:, -1]
 ```
 
@@ -282,7 +292,7 @@ deepspeed --module openrlhf.cli.train_ppo \
 # --remote_rm_url http://localhost:5000/get_reward
 ```
 
-### 使用 Ray 和 vLLM 的 PPO
+### 使用 Ray 和 vLLM 的 PPO/REINFORCE++
 
 为了提高 RLHF 训练速度或支持 70B 模型，我们可以使用 Ray 和 vLLM 加速的 PPO
 
@@ -335,15 +345,22 @@ ray job submit --address="http://127.0.0.1:8265" \
   --load_checkpoint \
   --use_wandb {wandb_token}
 
-# --vllm_sync_backend nccl (Only for multi-nodes with vLLM 0.6.4+ or vLLM 0.4.2)
+# 支持 REINFORCE++  | RLOO 
+# --advantage_estimator reinforce | rloo
 
 # 支持远程 reward model (HTTP)
 # --remote_rm_url http://localhost:5000/get_reward
+
+# 支持 N 倍采样
+# --n_samples_per_prompt 4
 ```
 
 > [!NOTE]
 > 不设置 `--vllm_num_engines` 则是不使用 vLLM engine。
 > 您也可以通过 ``setup_commands`` 让 Ray 自动初始化环境, 比如 `--runtime-env-json='{"setup_commands": ["pip install openrlhf[vllm]"]}'`
+
+> [!NOTE]
+> OPENRLHF's RLOO 基于 REINFORCE++ 修改而来, 和原版的实现不同.
 
 > [!NOTE]
 > 如果您由于某种原因，在 deepspeed 设置显卡设备时遇到与索引超出范围相关的错误，您可以尝试设置环境变量 [`RAY_EXPERIMENTAL_NOSET_*_VISIBLE_DEVICES`](openrlhf/trainer/ray/utils.py)。
@@ -354,6 +371,18 @@ ray job submit --address="http://127.0.0.1:8265" \
 
 所有支持算法的启动脚本和文档在 [example/scripts](./examples/scripts/) 和 [Documents - Usage](https://openrlhf.readthedocs.io/en/latest/usage.html)
 
+
+### 使用 LoRA
+如果您使用了 `LoRA (Low-Rank Adaptation)`，默认保存下来的文件**并非**完整模型权重，而是 `LoRA Adapter`，若想按完整权重的方式进行后续任务，您需要将 `Adapter` 与训练前的模型权重进行合并
+
+```bash
+python -m openrlhf.cli.lora_combiner \
+    --model_path meta-llama/Meta-Llama-3-8B \
+    --lora_path ./checkpoint/llama3-8b-rm \
+    --output_path ./checkpoint/llama-3-8b-rm-combined \
+    --is_rm \
+    --bf16
+```
 
 ## 性能
 我们通过启用Adam卸载、奖励模型(RM)和参考模型(Ref)卸载等技术,尽可能优化了DSChat的性能,从而在推理阶段增加小批量大小并避免内存不足问题。我们甚至修复了DSChat中的一些bug,以启用LLaMA2的混合引擎(HE)。使用优化后的DSChat和OpenRLHF训练1024个提示需要1个PPO轮次的平均时间(秒)如下:
@@ -370,7 +399,7 @@ ray job submit --address="http://127.0.0.1:8265" \
 > 数据已经过时; 请参考后面的调优指南重新测试
 
 ## 调优指南
-为了获得最佳的性能，我们建议您分配更多的节点给 vLLM Engine。例如，对于 70B 模型以及 32 张 A100，建议分配 16 张以上 A100 给 vLLM Engine，8 张给 Actor 模型，以及最后 8 张给 Critic 模型，同时开启 `--colocate_critic_reward`, `--colocate_actor_ref` 或者 `--ref_reward_offload (可选)` 选项合并部分节点。最后您应该尽可能增大 `--rollout_micro_batch_size` ，以及减小 vLLM 的 TP 切分数量。训练阶段的 `micro_train_batch_size` 也是越大越好，请同时使用 `--packing_samples` 。当 GPU 数量足够时请关闭 `--adam_offload`. 对于多节点 RLHF, 请使用 `--vllm_sync_backend nccl` with vLLM 0.6.4+.
+为了获得最佳的性能，我们建议您分配更多的节点给 vLLM Engine。例如，对于 70B 模型以及 32 张 A100，建议分配 16 张以上 A100 给 vLLM Engine，8 张给 Actor 模型，以及最后 8 张给 Critic 模型，同时开启 `--colocate_critic_reward`, `--colocate_actor_ref` 或者 `--ref_reward_offload (可选)` 选项合并部分节点。最后您应该尽可能增大 `--rollout_micro_batch_size` ，以及减小 vLLM 的 TP 切分数量。训练阶段的 `micro_train_batch_size` 也是越大越好，请同时使用 `--packing_samples` 。当 GPU 数量足够时请关闭 `--adam_offload` 以及启用 `--overlap_comm`. 对于多节点 RLHF, 请使用 `--vllm_sync_backend nccl` with vLLM 0.6.4+.
 
 ## 使用 OpenRLHF 的公司和组织
 
@@ -450,4 +479,4 @@ ray job submit --address="http://127.0.0.1:8265" \
 
 ______________________________________________________________________
 
-*OpenRLHF © 2024 OpenRLHF. 版权所有。*
+*OpenRLHF © 2025 OpenRLHF. 版权所有。*

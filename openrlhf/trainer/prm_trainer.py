@@ -105,6 +105,8 @@ class ProcessRewardModelTrainer(ABC):
             desc="Train epoch",
             disable=not self.strategy.is_rank_0(),
         )
+        loss_sum = 0
+        acc_sum = 0
         for epoch in range(start_epoch, self.epochs):
             if isinstance(self.train_dataloader.sampler, DistributedSampler):
                 self.train_dataloader.sampler.set_epoch(
@@ -119,20 +121,26 @@ class ProcessRewardModelTrainer(ABC):
 
             # train
             self.model.train()
-            loss_mean = 0
             for data in self.train_dataloader:
                 if not self.packing_samples:
                     inputs, attention_masks, labels = data
                     inputs = inputs.to(torch.cuda.current_device())
                     attention_mask = attention_masks.to(torch.cuda.current_device())
                     labels = labels.to(torch.cuda.current_device())
+                    packed_seq_lens = None
                 else:
                     inputs, attention_masks, packed_seq_lens, labels = data
                     inputs = inputs.to(torch.cuda.current_device()).squeeze(1)
                     attention_mask = attention_masks.to(torch.cuda.current_device()).squeeze(1)
                     labels = labels.to(torch.cuda.current_device()).squeeze(1)
 
-                output = self.model(inputs, attention_mask=attention_mask, return_output=True)
+                output = self.model(
+                    inputs,
+                    attention_mask=attention_mask,
+                    return_output=True,
+                    ring_attn_group=self.strategy.ring_attn_group,
+                    packed_seq_lens=packed_seq_lens,
+                )
 
                 # mixtral
                 if self.aux_loss:
@@ -145,10 +153,10 @@ class ProcessRewardModelTrainer(ABC):
                 self.strategy.backward(loss, self.model, self.optimizer)
                 self.strategy.optimizer_step(self.optimizer, self.model, self.scheduler)
 
-                loss_mean = loss_mean * 0.9 + 0.1 * loss.item()
+                loss_sum += loss.item()
+                acc_sum += acc.item()
                 logs_dict = {
                     "prm_loss": prm_loss.item(),
-                    "loss_mean": loss_mean,
                     "acc": acc.item(),
                     "lr": self.scheduler.get_last_lr()[0],
                 }
@@ -161,6 +169,10 @@ class ProcessRewardModelTrainer(ABC):
 
                 # logs/checkpoints/evaluation
                 if step % self.strategy.accumulated_gradient == 0:
+                    logs_dict["loss_mean"] = loss_sum / self.strategy.accumulated_gradient
+                    logs_dict["acc_mean"] = acc_sum / self.strategy.accumulated_gradient
+                    loss_sum = 0
+                    acc_sum = 0
                     global_step = step // self.strategy.accumulated_gradient
                     client_states = {"consumed_samples": global_step * args.train_batch_size}
                     self.save_logs_and_checkpoints(args, global_step, step_bar, logs_dict, client_states)
@@ -206,6 +218,7 @@ class ProcessRewardModelTrainer(ABC):
                     inputs = inputs.to(torch.cuda.current_device())
                     attention_mask = attention_masks.to(torch.cuda.current_device())
                     labels = labels.to(torch.cuda.current_device())
+                    packed_seq_lens = None
                 else:
                     inputs, attention_masks, packed_seq_lens, labels = data
                     inputs = inputs.to(torch.cuda.current_device()).squeeze(1)

@@ -26,19 +26,21 @@ def _validate_args(args):
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
     assert (
-        actor_world_size & (actor_world_size - 1)
-    ) == 0, f"actor_world_size must be power of 2, got {actor_world_size}"
+        args.rollout_batch_size % actor_world_size == 0
+    ), f"rollout_bach_size must be divisible by actor_world_size, got {args.rollout_batch_size} and {actor_world_size}"
+
+    assert args.zero_stage != 3 or args.vllm_num_engines > 0, f"ZeRO-3 is only supported when vLLM enabled"
+
+    if args.vllm_num_engines > 0:
+        assert (
+            actor_world_size % args.vllm_num_engines == 0
+        ), f"actor_world_size must be divisible by vllm_num_engines, got {actor_world_size} and {args.vllm_num_engines}"
 
     if args.critic_pretrain:
         critic_world_size = args.critic_num_nodes * args.critic_num_gpus_per_node
         assert (
-            critic_world_size & (critic_world_size - 1)
-        ) == 0, f"critic_world_size must be power of 2, got {critic_world_size}"
-        assert (
             actor_world_size % critic_world_size == 0
         ), f"actor_world_size must be divisible by critic_world_size, got {actor_world_size} and {critic_world_size}"
-
-    assert args.zero_stage != 3 or args.vllm_num_engines > 0, f"ZeRO-3 is only supported when vLLM enabled"
 
 
 def train(args):
@@ -137,8 +139,6 @@ def train(args):
         for reward_model, reward_pretrain in zip(reward_models, reward_pretrains):
             refs.extend(reward_model.async_init_model_from_pretrained(strategy, reward_pretrain))
 
-    ray.get(refs)
-
     # init vLLM engine for text generation
     vllm_engines = None
     if args.vllm_num_engines is not None and args.vllm_num_engines > 0:
@@ -152,6 +152,8 @@ def train(args):
             args.enforce_eager,
             max_len,
         )
+
+    ray.get(refs)
 
     if args.critic_pretrain:
         # critic scheduler initialization depends on max_step, so we have to init critic after actor
@@ -210,7 +212,7 @@ if __name__ == "__main__":
         default=1,
         help="tensor parallel size of vLLM Engine for multi-GPU inference",
     )
-    parser.add_argument("--vllm_sync_backend", type=str, default="gloo", help="DeepSpeed -> vLLM weight sync backend")
+    parser.add_argument("--vllm_sync_backend", type=str, default="nccl", help="DeepSpeed -> vLLM weight sync backend")
     parser.add_argument("--enable_prefix_caching", action="store_true", default=False)
     parser.add_argument("--enforce_eager", action="store_true", default=False, help="Disable CUDA graph in vLLM")
 
@@ -235,7 +237,7 @@ if __name__ == "__main__":
     parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
     parser.add_argument("--flash_attn", action="store_true", default=False, help="Enable FlashAttention2")
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
-    parser.add_argument("--disable_trace_cache", action="store_true", default=False)
+    parser.add_argument("--overlap_comm", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 
@@ -279,6 +281,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_value_network", action="store_true", default=False, help="Save critic model")
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
+    parser.add_argument("--lr_warmup_ratio", type=float, default=0.03)
     parser.add_argument("--kl_target", type=float, default=None)
     parser.add_argument("--init_kl_coef", type=float, default=0.01, help="KL penalty in PPO")
     parser.add_argument(
@@ -298,9 +301,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--advantage_estimator",
         type=str,
-        choices=["gae", "reinforce"],
+        choices=["gae", "reinforce", "rloo"],
         default="gae",
-        help="Choose advantage estimation method: gae, reinforce",
+        help="Choose advantage estimation method: gae, reinforce, rloo",
     )
 
     #  Models
@@ -361,6 +364,9 @@ if __name__ == "__main__":
             args.critic_pretrain = args.reward_pretrain.split(",")[0]
         else:
             args.critic_pretrain = args.pretrain
+
+    if args.advantage_estimator == "rloo":
+        assert args.n_samples_per_prompt > 1, "RLOO requires n_samples_per_prompt > 1"
 
     if args.remote_rm_url:
         args.remote_rm_url = args.remote_rm_url.split(",")

@@ -20,13 +20,13 @@ logger = init_logger(__name__)
 def to(tensor: Union[torch.Tensor, list[torch.Tensor]], device):
     if isinstance(tensor, list):
         return [to(t, device) for t in tensor]
-    return tensor.to(device)
+    return tensor.to(device) if isinstance(tensor, torch.Tensor) else tensor
 
 
 def pin_memory(tensor: Union[torch.Tensor, list[torch.Tensor]]):
     if isinstance(tensor, list):
         return [pin_memory(t) for t in tensor]
-    return tensor.pin_memory()
+    return tensor.pin_memory() if isinstance(tensor, torch.Tensor) else tensor
 
 
 @dataclass
@@ -40,7 +40,7 @@ class Experience:
     action_log_probs: (B, A)
     values: (B, A)
     returns: (B, A)
-    advatanges: (B, A)
+    advantages: (B, A)
     attention_mask: (B, S)
     action_mask: (B, A)
     kl: (B, A)
@@ -59,29 +59,28 @@ class Experience:
     kl: Optional[torch.Tensor] = None
 
     @torch.no_grad()
-    def to_device(self, device: torch.device) -> None:
+    def to_device(self, device: torch.device):
         self.sequences = to(self.sequences, device)
         self.action_log_probs = to(self.action_log_probs, device)
         self.returns = to(self.returns, device)
         self.advantages = to(self.advantages, device)
-        if self.values is not None:
-            self.values = to(self.values, device)
-        if self.attention_mask is not None:
-            self.attention_mask = self.attention_mask.to(device)
-        if self.action_mask is not None:
-            self.action_mask = self.action_mask.to(device)
+        self.values = to(self.values, device)
+        self.attention_mask = to(self.attention_mask, device)
+        self.action_mask = to(self.action_mask, device)
+        self.kl = to(self.kl, device)
+        self.info = {key: to(value, device) for key, value in self.info.items()}
+        return self
 
     def pin_memory(self):
         self.sequences = pin_memory(self.sequences)
         self.action_log_probs = pin_memory(self.action_log_probs)
         self.returns = pin_memory(self.returns)
         self.advantages = pin_memory(self.advantages)
-        if self.values is not None:
-            self.values = pin_memory(self.values)
-        if self.attention_mask is not None:
-            self.attention_mask = self.attention_mask.pin_memory()
-        if self.action_mask is not None:
-            self.action_mask = self.action_mask.pin_memory()
+        self.values = pin_memory(self.values)
+        self.attention_mask = pin_memory(self.attention_mask)
+        self.action_mask = pin_memory(self.action_mask)
+        self.kl = pin_memory(self.kl)
+        self.info = {key: pin_memory(value) for key, value in self.info.items()}
         return self
 
 
@@ -178,21 +177,27 @@ class NaiveExperienceMaker(ABC):
         After that, we will calculate the advantages and returns for each experience.
         """
         args = self.strategy.args
+        # generate responses
+        samples_list = self.generate_samples(all_prompts, **generate_kwargs)
+        torch.distributed.barrier()
+
         experiences = []
         for samples in tqdm(
-            self.generate_samples(all_prompts, **generate_kwargs),
+            samples_list,
             desc="make_experience",
             disable=not self.strategy.is_rank_0(),
         ):
-            experiences.append(self.make_experience(samples))
+            experiences.append(self.make_experience(samples).to_device("cpu"))
 
-        experiences = self.process_experiences(experiences)
+        experiences, rewards = self.process_experiences(experiences)
 
         # calculate return and advantages
-        for experience in experiences:
+        for experience, reward in zip(experiences, rewards):
+            experience = experience.to_device("cuda")
+            reward = reward.to(device="cuda")
             num_actions = experience.info["num_actions"]
             reward = compute_reward(
-                experience.info["reward"],
+                reward,
                 self.kl_ctl.value,
                 experience.kl,
                 action_mask=experience.action_mask,
@@ -208,7 +213,7 @@ class NaiveExperienceMaker(ABC):
                     generate_kwargs["gamma"],
                     generate_kwargs["lambd"],
                 )
-            elif self.advantage_estimator == "reinforce":
+            elif self.advantage_estimator in ["reinforce", "rloo"]:
                 experience.returns = self.get_cumulative_returns(
                     reward,
                     experience.action_mask,
@@ -229,6 +234,7 @@ class NaiveExperienceMaker(ABC):
             # remove unnecessary info
             experience.kl = None
             del experience.info["num_actions"]
+            experience.to_device("cpu")
         return experiences
 
     @torch.no_grad()
@@ -329,9 +335,25 @@ class NaiveExperienceMaker(ABC):
         )
 
     @torch.no_grad()
-    def process_experiences(self, experiences: List[Experience]) -> List[Experience]:
-        # TODO: add more methods to process experiences
-        return experiences
+    def process_experiences(self, experiences: List[Experience]) -> Tuple[List[Experience], List[torch.Tensor]]:
+        """
+        Process experiences, this can be used to filter out some experiences or do some processing on the rewards.
+
+        Output:
+        - experiences: List of Experience
+        - rewards: List of rewards
+        """
+        args = self.strategy.args
+        # reward shaping for RLOO
+        if args.advantage_estimator == "rloo":
+            rewards = torch.cat([experience.info["reward"] for experience in experiences])
+            rewards = rewards.reshape(-1, args.n_samples_per_prompt).to(device="cuda")
+            baseline = (rewards.sum(-1, keepdim=True) - rewards) / (args.n_samples_per_prompt - 1)
+            rewards = rewards - baseline
+            rewards = rewards.flatten().to(device="cpu").chunk(len(experiences))
+            return experiences, rewards
+        # default rewards
+        return experiences, [experience.info["reward"] for experience in experiences]
 
     @torch.no_grad()
     def get_advantages_and_returns(
@@ -522,21 +544,20 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 r_refs.append(rm.forward.remote(sequences_cpu, attention_mask_cpu, packed_seq_lens=packed_seq_lens))
         else:
             # remote RM
+            if not self.packing_samples:
+                queries = self.tokenizer.batch_decode(sequences_cpu, skip_special_tokens=False)
+            else:
+                sequences_list = []
+                offset = 0
+                tokens_list = sequences_cpu.tolist()[0]
+                for length in packed_seq_lens:
+                    sequences_list.append(tokens_list[offset : offset + length])
+                    offset += length
+                queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
+
             for rm in self.remote_rm_url:
-                if not self.packing_samples:
-                    queries = self.tokenizer.batch_decode(sequences_cpu, skip_special_tokens=False)
-                    r = remote_rm_fn_ray.remote(rm, queries=queries)
-                    r_refs.append(r)
-                else:
-                    sequences_list = []
-                    offset = 0
-                    tokens_list = sequences_cpu.tolist()[0]
-                    for length in packed_seq_lens:
-                        sequences_list.append(tokens_list[offset : offset + length])
-                        offset += length
-                    queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
-                    r = remote_rm_fn_ray.remote(rm, queries=queries)
-                    r_refs.append(r)
+                r = remote_rm_fn_ray.remote(rm, queries=queries)
+                r_refs.append(r)
 
         # log probs
         action_log_probs = self.actor(sequences, num_actions, attention_mask, packed_seq_lens=packed_seq_lens)
@@ -631,6 +652,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             max_tokens=kwargs.get("max_new_tokens", 1024),
             min_tokens=kwargs.get("min_new_tokens", 1),
             skip_special_tokens=kwargs.get("skip_special_tokens", False),
+            include_stop_str_in_output=True,
         )
 
         # Expand prompt list based on the number of samples per prompt
@@ -675,9 +697,6 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                     # right padding output
                     output_len = len(output.outputs[0].token_ids)
                     output_ids = list(output.outputs[0].token_ids) + [pad_token_id] * (max_output_len - output_len)
-
-                    if output_ids[output_len - 1] != eos_token_id:
-                        output_ids[min(output_len, len(output_ids) - 1)] = eos_token_id
 
                     # concat input and output
                     sequences.append(input_ids + output_ids)
