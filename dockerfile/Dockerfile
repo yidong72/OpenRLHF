@@ -16,6 +16,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt install -y tzdata
 RUN apt-get -y install build-essential git python3-dev python3-pip libopenexr-dev libxi-dev libglfw3-dev libglew-dev libomp-dev libxinerama-dev libxcursor-dev gdb
 RUN pip uninstall xgboost transformer_engine flash_attn -y
 RUN pip install vllm==0.6.5
+RUN pip install accelerate bitsandbytes datasets deepspeed==0.15.0 einops flash-attn==2.7.0.post2 isort jsonlines loralib optimum packaging peft ray[default]==2.12.0 tensorboard torch torchmetrics tqdm transformers==4.46.3 transformers_stream_generator wandb wheel
 COPY entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh
