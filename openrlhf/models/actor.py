@@ -153,6 +153,7 @@ class Actor(nn.Module):
         return self.process_sequences(sequences, input_ids.size(1), eos_token_id, pad_token_id)
 
     def process_sequences(self, sequences: torch.Tensor, input_len, eos_token_id, pad_token_id):
+        # the original attention_mask which doesn't have the extra eos_token_id in the end
         attention_mask = (sequences.ne(eos_token_id) & sequences.ne(pad_token_id)).to(dtype=torch.long)
         seq_length = attention_mask.size(1)
 
@@ -171,11 +172,15 @@ class Actor(nn.Module):
         # For Llama3 and Qwen2 models, there are some eos_tokens in the middle of the prompt.
         first_token_indices = attention_mask.long().argmax(dim=1, keepdim=True)
         mask = torch.arange(seq_length).unsqueeze(0).expand(sequences.size(0), -1).to(device=sequences.device)
+        # the new attention_mask has extra eos_token_id in the end
         attention_mask = (mask >= first_token_indices) & (mask <= eos_indices).to(dtype=torch.long)
 
         # in RL, state_i (current token) + action_i (next token) -> state_i+1 (next token)
+        # this a trick to include the last eos_indices in the action_mask
         state_seq = sequences[:, input_len - 1 : -1]
+        # the last state token is not eos_token_id, but the action token is eos_token_id
         action_mask = state_seq.ne(eos_token_id) & state_seq.ne(pad_token_id)
+        # make sure the first state token is always included
         action_mask[:, 0] = 1
 
         return sequences, attention_mask, action_mask
