@@ -104,6 +104,7 @@ class Samples:
     packed_seq_lens: None or (B,), the length of each sample in the packed samples.
     response_length: (B,), the number of tokens in the response.
     total_length: (B,), the total number of tokens in the sequences.
+    prompts: the prompts used to generate responses
     """
 
     sequences: torch.Tensor
@@ -113,6 +114,7 @@ class Samples:
     packed_seq_lens: Optional[torch.Tensor]
     response_length: torch.Tensor
     total_length: torch.Tensor
+    prompts: list[str]
 
 
 class NaiveExperienceMaker(ABC):
@@ -130,7 +132,7 @@ class NaiveExperienceMaker(ABC):
         prompt_max_len: int,
         kl_controller,
         strategy=None,
-        remote_rm_url: str = None,
+        remote_rm_url: list[str] = None,
         reward_fn=None,
     ) -> None:
         super().__init__()
@@ -146,6 +148,17 @@ class NaiveExperienceMaker(ABC):
         self.reward_fn = reward_fn
         self.perf_stats = None
         self.advantage_estimator = strategy.args.advantage_estimator
+
+        # custom reward func for reinforced finetuning
+        self.custom_reward_func = None
+        if remote_rm_url and remote_rm_url[0].endswith(".py"):
+            print(f"Loading custom `reward_func(queries, prompts)` from {remote_rm_url[0]}")
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("reward_func", remote_rm_url[0])
+            reward_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(reward_module)
+            self.custom_reward_func = reward_module.reward_func
 
     # tokenizer
     def tokenize_fn(self, texts, max_length, padding=True, device=None):
@@ -260,6 +273,7 @@ class NaiveExperienceMaker(ABC):
                 packed_seq_lens=None,
                 response_length=action_mask.float().sum(dim=-1),
                 total_length=attention_mask.float().sum(dim=-1),
+                prompts=prompts,
             )
             samples_list.append(samples)
         return samples_list
@@ -298,7 +312,12 @@ class NaiveExperienceMaker(ABC):
         if self.remote_rm_url is not None:
             # remote RM
             queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
-            r = remote_rm_fn(self.remote_rm_url, queries=queries).to(device=action_log_probs.device)
+            if self.custom_reward_func:
+                r = self.custom_reward_func(queries, samples.prompts).to(device=action_log_probs.device)
+            else:
+                r = remote_rm_fn(self.remote_rm_url, queries=queries, prompts=samples.prompts).to(
+                    device=action_log_probs.device
+                )
         else:
             # local RM
             r = self.reward_model(sequences, attention_mask)
@@ -464,6 +483,9 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         self.vllm_engines = vllm_engines
         self.packing_samples = packing_samples
 
+        if self.custom_reward_func:
+            self.custom_reward_func = ray.remote(self.custom_reward_func)
+
     @torch.no_grad()
     def make_experience_list(self, all_prompts: Union[str, List[str]], **generate_kwargs) -> List[Experience]:
         if self.strategy.args.perf:
@@ -492,13 +514,24 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         if self.vllm_engines is None:
             return super().generate_samples(all_prompts, **generate_kwargs)
 
-        return self._generate_vllm(all_prompts, **generate_kwargs)
+        # vLLM generation
+        samples = self._generate_vllm(all_prompts, **generate_kwargs)
+
+        # vLLM offload when colocate_all_models
+        if self.strategy.args.vllm_enable_sleep:
+            if torch.distributed.get_rank() == 0:
+                refs = []
+                for engine in self.vllm_engines:
+                    refs.append(engine.sleep.remote())
+                ray.get(refs)
+        return samples
 
     @torch.no_grad()
     def make_experience(self, samples: Samples) -> Experience:
         """
         Turn samples into experience by calculating logprobs, values, rewards, and kl divergence.
         """
+        args = self.strategy.args
         self.actor.eval()
         device = torch.cuda.current_device()
 
@@ -520,19 +553,23 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             sequences_cpu, num_actions, attention_mask_cpu, packed_seq_lens=packed_seq_lens
         )
 
+        if args.colocate_all_models:
+            ray.get([base_action_log_probs_ref])
+            ray.get([self.initial_model.empty_cache.remote()])
+
         # values
         if self.critic is not None:
             value_ref = self.critic.forward.remote(
                 sequences_cpu, num_actions, attention_mask_cpu, packed_seq_lens=packed_seq_lens
             )
             # avoid CUDA OOM when colocate models
-            if self.strategy.args.colocate_critic_reward:
+            if args.colocate_critic_reward or args.colocate_all_models:
                 ray.get([value_ref])
                 ray.get([self.critic.empty_cache.remote()])
         else:
             value_ref = ray.put(None)
 
-        if self.strategy.args.colocate_actor_ref:
+        if args.colocate_actor_ref:
             ray.get([base_action_log_probs_ref])
             ray.get([self.initial_model.empty_cache.remote()])
 
@@ -555,9 +592,17 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                     offset += length
                 queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
 
-            for rm in self.remote_rm_url:
-                r = remote_rm_fn_ray.remote(rm, queries=queries)
+            if self.custom_reward_func:
+                r = self.custom_reward_func.remote(queries, samples.prompts)
                 r_refs.append(r)
+            else:
+                for rm in self.remote_rm_url:
+                    r = remote_rm_fn_ray.remote(rm, queries=queries, prompts=samples.prompts)
+                    r_refs.append(r)
+
+        if args.colocate_all_models and not self.remote_rm_url:
+            ray.get(r_refs)
+            ray.get([self.reward_model[0].empty_cache.remote()])
 
         # log probs
         action_log_probs = self.actor(sequences, num_actions, attention_mask, packed_seq_lens=packed_seq_lens)
@@ -576,17 +621,17 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
 
         # avoid CUDA OOM when colocate models
-        if self.strategy.args.colocate_critic_reward and not self.remote_rm_url:
+        if args.colocate_critic_reward and not self.remote_rm_url:
             ray.get([self.reward_model[0].empty_cache.remote()])
 
-        if self.strategy.args.colocate_actor_ref:
+        if args.colocate_actor_ref or args.colocate_all_models:
             torch.cuda.empty_cache()
 
         kl = compute_approx_kl(
             action_log_probs,
             base_action_log_probs,
             action_mask=action_mask,
-            use_kl_estimator_k3=self.strategy.args.use_kl_estimator_k3,
+            use_kl_estimator_k3=args.use_kl_estimator_k3,
         )
 
         if not self.packing_samples:
@@ -660,21 +705,28 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         all_prompt_token_ids = self.tokenize_fn(all_prompts, self.prompt_max_len, padding=False)["input_ids"]
 
         # Distribute requests to engines and collect responses to outputs
-        all_output_refs = []
+        refs = []
         batch_size = (len(all_prompt_token_ids) + len(llms) - 1) // len(llms)
         for i, llm in enumerate(llms):
             prompt_token_ids = all_prompt_token_ids[i * batch_size : (i + 1) * batch_size]
-            if prompt_token_ids:
-                all_output_refs.append(
-                    llm.generate.remote(sampling_params=sampling_params, prompt_token_ids=prompt_token_ids)
-                )
+            refs.append(
+                llm.add_requests.remote(rank, sampling_params=sampling_params, prompt_token_ids=prompt_token_ids)
+            )
+        ray.get(refs)
+
+        # Make sure all requests are sent.
+        torch.distributed.barrier()
 
         # Retrieve and combine results from all outputs
+        all_output_refs = []
+        for i, llm in enumerate(llms):
+            all_output_refs.append(llm.get_responses.remote(rank))
         all_outputs = sum(ray.get(all_output_refs), [])
 
         samples_list = []
         for i in range(0, len(all_outputs), args.micro_rollout_batch_size):
             outputs = all_outputs[i : i + self.strategy.args.micro_rollout_batch_size]
+            prompts = all_prompts[i : i + self.strategy.args.micro_rollout_batch_size]
             if not self.packing_samples:
                 # NOTE: concat all outputs to following format:
                 #
@@ -717,6 +769,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                         packed_seq_lens=None,
                         response_length=action_mask.float().sum(dim=-1),
                         total_length=attention_mask.float().sum(dim=-1),
+                        prompts=prompts,
                     )
                 )
             else:
@@ -754,6 +807,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                         packed_seq_lens=packed_seq_lens,
                         response_length=response_length,
                         total_length=total_length,
+                        prompts=prompts,
                     )
                 )
         return samples_list
